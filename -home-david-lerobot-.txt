@@ -1,1 +1,0 @@
-/home/david/lerobot/debug_position.py

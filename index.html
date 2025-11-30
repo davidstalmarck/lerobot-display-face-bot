@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SO-101 Hackathon Receptionist</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Arial', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        .container {
+            text-align: center;
+            color: white;
+        }
+
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .subtitle {
+            font-size: 1.2em;
+            margin-bottom: 30px;
+            opacity: 0.9;
+        }
+
+        .face-container {
+            width: 400px;
+            height: 400px;
+            margin: 20px auto;
+            position: relative;
+        }
+
+        .face {
+            width: 100%;
+            height: 100%;
+            background: #f0f0f5;
+            border-radius: 50%;
+            position: relative;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            animation: float 3s ease-in-out infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(-20px); }
+        }
+
+        .eye {
+            width: 60px;
+            height: 60px;
+            background: white;
+            border-radius: 50%;
+            position: absolute;
+            top: 35%;
+            border: 3px solid #333;
+            overflow: hidden;
+        }
+
+        .eye.left { left: 25%; }
+        .eye.right { right: 25%; }
+
+        .pupil {
+            width: 30px;
+            height: 30px;
+            background: #333;
+            border-radius: 50%;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            transition: all 0.1s ease;
+        }
+
+        .mouth {
+            width: 100px;
+            height: 50px;
+            border: 4px solid #333;
+            border-top: none;
+            border-radius: 0 0 100px 100px;
+            position: absolute;
+            bottom: 25%;
+            left: 50%;
+            transform: translateX(-50%);
+            transition: all 0.3s ease;
+        }
+
+        .mouth.speaking {
+            animation: talk 0.3s ease infinite alternate;
+        }
+
+        @keyframes talk {
+            0% { height: 50px; }
+            100% { height: 70px; }
+        }
+
+        .mouth.listening {
+            border-radius: 50%;
+            height: 60px;
+            border-top: 4px solid #333;
+        }
+
+        .status {
+            margin-top: 20px;
+            font-size: 1.5em;
+            font-weight: bold;
+            padding: 15px 30px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 30px;
+            backdrop-filter: blur(10px);
+        }
+
+        .status.idle { color: #90EE90; }
+        .status.listening { color: #FFD700; }
+        .status.thinking { color: #FF69B4; }
+        .status.speaking { color: #00CED1; }
+
+        .controls {
+            margin-top: 30px;
+            font-size: 1em;
+            opacity: 0.8;
+        }
+
+        .blink {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #f0f0f5;
+            transform-origin: top;
+            transform: scaleY(0);
+        }
+
+        .blink.active {
+            animation: blink 0.2s ease;
+        }
+
+        @keyframes blink {
+            0%, 100% { transform: scaleY(0); }
+            50% { transform: scaleY(1); }
+        }
+
+        .particles {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        .particle {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            background: rgba(255,255,255,0.5);
+            border-radius: 50%;
+            animation: float-particle 3s ease-in-out infinite;
+        }
+
+        @keyframes float-particle {
+            0%, 100% { transform: translateY(0); opacity: 0.5; }
+            50% { transform: translateY(-30px); opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div class="particles" id="particles"></div>
+
+    <div class="container">
+        <h1>SO-101</h1>
+        <div class="subtitle">Zero2Demo Hackathon Receptionist</div>
+
+        <div class="face-container">
+            <div class="face">
+                <div class="eye left">
+                    <div class="pupil" id="pupil-left"></div>
+                    <div class="blink" id="blink-left"></div>
+                </div>
+                <div class="eye right">
+                    <div class="pupil" id="pupil-right"></div>
+                    <div class="blink" id="blink-right"></div>
+                </div>
+                <div class="mouth" id="mouth"></div>
+            </div>
+        </div>
+
+        <div class="status idle" id="status">Ready to Help!</div>
+
+        <div class="controls">
+            Press SPACE to talk | Q to quit
+        </div>
+    </div>
+
+    <script>
+        // WebSocket connection for state updates
+        const ws = new WebSocket('ws://localhost:8765');
+
+        ws.onopen = () => {
+            console.log('Connected to robot backend');
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            updateFace(data);
+        };
+
+        ws.onerror = (error) => {
+            console.log('WebSocket error, running in standalone mode');
+        };
+
+        // Face state
+        let currentState = 'idle';
+        const mouth = document.getElementById('mouth');
+        const status = document.getElementById('status');
+        const pupilLeft = document.getElementById('pupil-left');
+        const pupilRight = document.getElementById('pupil-right');
+        const blinkLeft = document.getElementById('blink-left');
+        const blinkRight = document.getElementById('blink-right');
+
+        function updateFace(data) {
+            const { state, audio_level } = data;
+
+            if (state) {
+                currentState = state;
+                mouth.className = 'mouth ' + state;
+                status.className = 'status ' + state;
+
+                const statusText = {
+                    'idle': 'Ready to Help!',
+                    'listening': 'Listening...',
+                    'thinking': 'Thinking...',
+                    'speaking': 'Speaking...'
+                };
+
+                status.textContent = statusText[state] || 'Ready to Help!';
+            }
+        }
+
+        // Random blinking
+        setInterval(() => {
+            if (Math.random() < 0.1) {
+                blinkLeft.classList.add('active');
+                blinkRight.classList.add('active');
+
+                setTimeout(() => {
+                    blinkLeft.classList.remove('active');
+                    blinkRight.classList.remove('active');
+                }, 200);
+            }
+        }, 2000);
+
+        // Pupil following mouse
+        document.addEventListener('mousemove', (e) => {
+            const eyes = document.querySelectorAll('.eye');
+            eyes.forEach((eye, index) => {
+                const rect = eye.getBoundingClientRect();
+                const eyeX = rect.left + rect.width / 2;
+                const eyeY = rect.top + rect.height / 2;
+
+                const angle = Math.atan2(e.clientY - eyeY, e.clientX - eyeX);
+                const distance = Math.min(15, Math.hypot(e.clientX - eyeX, e.clientY - eyeY) / 20);
+
+                const pupil = index === 0 ? pupilLeft : pupilRight;
+                const x = Math.cos(angle) * distance;
+                const y = Math.sin(angle) * distance;
+
+                pupil.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
+            });
+        });
+
+        // Create floating particles
+        const particlesContainer = document.getElementById('particles');
+        for (let i = 0; i < 20; i++) {
+            const particle = document.createElement('div');
+            particle.className = 'particle';
+            particle.style.left = Math.random() * 100 + '%';
+            particle.style.top = Math.random() * 100 + '%';
+            particle.style.animationDelay = Math.random() * 3 + 's';
+            particlesContainer.appendChild(particle);
+        }
+
+        // Keyboard controls (for testing)
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                updateFace({ state: 'listening' });
+            } else if (e.key === 'q') {
+                updateFace({ state: 'idle' });
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                setTimeout(() => updateFace({ state: 'thinking' }), 500);
+                setTimeout(() => updateFace({ state: 'speaking' }), 1500);
+                setTimeout(() => updateFace({ state: 'idle' }), 3000);
+            }
+        });
+    </script>
+</body>
+</html>

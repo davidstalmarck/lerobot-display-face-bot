@@ -51,7 +51,7 @@ print("=" * 80)
 # Motor bus configuration
 print("\n[1/10] Creating motor bus configuration...")
 config = FeetechMotorsBusConfig(
-    port="/dev/ttyACM0",  # Change to your port: /dev/ttyACM1, /dev/tty.usbmodem..., etc.
+    port="/dev/ttyACM1",  # Change to your port: /dev/ttyACM1, /dev/tty.usbmodem..., etc.
     motors={
         # Format: "motor_name": [motor_id, "model"]
         # Motor IDs must be unique (1-252)

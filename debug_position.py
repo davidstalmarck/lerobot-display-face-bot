@@ -34,20 +34,21 @@ import sys
 TARGET_POSITION = {
     # Keep arm stationary (not used for display)
     "shoulder_pan": 2048, # motor 1
-    "shoulder_lift": 1348, # motor 2
-    "elbow_flex": 2248, # motor 3
+    "shoulder_lift": 2048, # motor 2
+    "elbow_flex": 2048, # motor 3
 
     # HEAD/DISPLAY POSITION - Edit these to find your ideal starting pose!
-    "wrist_flex": 2348,    # Head pitch: 2048=level, >2048=look up, <2048=look down
+    "wrist_flex": 2048,    # Head pitch: 2048=level, >2048=look up, <2048=look down
     "wrist_roll": 2048,    # Head tilt: 2048=level, >2048=tilt left, <2048=tilt right
-    "gripper": 2048,       # Neck turn: 2048=center, >2048=turn left, <2048=turn right
+    "gripper": 2048,       # Neck turn: 2048=center, >2048=turn left, <2048=turn right (may be stuck)
 }
 
 # Movement speed (1-254, higher = faster)
 SPEED = 150  # Smooth speed for testing
 
 # Motor port
-PORT = "/dev/ttyACM0"
+PORT = "/dev/ttyACM1"
+
 
 # ============================================================================
 # MAIN SCRIPT
@@ -272,9 +273,17 @@ def main():
         time.sleep(2)
 
         # Read actual positions
-        positions = bus.read("Present_Position")
         motor_names = list(TARGET_POSITION.keys())
-        actual_positions = dict(zip(motor_names, positions))
+        actual_positions = {}
+
+        # Try to read each motor individually to handle errors gracefully
+        for motor_name in motor_names:
+            try:
+                pos = bus.read("Present_Position", [motor_name])[0]
+                actual_positions[motor_name] = pos
+            except Exception as e:
+                print(f"Warning: Could not read {motor_name}: {e}")
+                actual_positions[motor_name] = "ERROR"
 
         print()
         print("=" * 70)
@@ -286,7 +295,7 @@ def main():
         print(f"  wrist_roll (tilt):  {actual_positions['wrist_roll']}")
         print(f"  gripper (neck):     {actual_positions['gripper']}")
         print()
-        print("ARM motors (should be at 2048):")
+        print("ARM motors:")
         print(f"  shoulder_pan:  {actual_positions['shoulder_pan']}")
         print(f"  shoulder_lift: {actual_positions['shoulder_lift']}")
         print(f"  elbow_flex:    {actual_positions['elbow_flex']}")

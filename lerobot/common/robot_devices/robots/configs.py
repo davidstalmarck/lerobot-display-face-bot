@@ -443,7 +443,7 @@ class So101RobotConfig(ManipulatorRobotConfig):
     leader_arms: dict[str, MotorsBusConfig] = field(
         default_factory=lambda: {
             "main": FeetechMotorsBusConfig(
-                port="/dev/tty.usbmodem58760431091",
+                port="/dev/ttyACM0",
                 motors={
                     # name: (index, model)
                     "shoulder_pan": [1, "sts3215"],
@@ -451,7 +451,7 @@ class So101RobotConfig(ManipulatorRobotConfig):
                     "elbow_flex": [3, "sts3215"],
                     "wrist_flex": [4, "sts3215"],
                     "wrist_roll": [5, "sts3215"],
-                    "gripper": [6, "sts3215"],
+                    # "gripper": [6, "sts3215"],  # DISABLED - not using gripper
                 },
             ),
         }
@@ -460,7 +460,7 @@ class So101RobotConfig(ManipulatorRobotConfig):
     follower_arms: dict[str, MotorsBusConfig] = field(
         default_factory=lambda: {
             "main": FeetechMotorsBusConfig(
-                port="/dev/tty.usbmodem585A0076891",
+                port="/dev/ttyACM1",
                 motors={
                     # name: (index, model)
                     "shoulder_pan": [1, "sts3215"],
@@ -468,7 +468,7 @@ class So101RobotConfig(ManipulatorRobotConfig):
                     "elbow_flex": [3, "sts3215"],
                     "wrist_flex": [4, "sts3215"],
                     "wrist_roll": [5, "sts3215"],
-                    "gripper": [6, "sts3215"],
+                    # "gripper": [6, "sts3215"],  # DISABLED - not using gripper
                 },
             ),
         }

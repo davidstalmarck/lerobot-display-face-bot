@@ -63,6 +63,7 @@ print("="*60 + "\n")
 
 loop_count = 0
 start_time = time.time()
+SAMPLING_SPEED = 0.01
 
 try:
     while running:
@@ -85,7 +86,7 @@ try:
             loop_count += 1
 
             # Small delay to avoid overwhelming the bus
-            time.sleep(0.01)  # ~100Hz max
+            time.sleep(SAMPLING_SPEED)  # ~100Hz max
 
         except Exception as e:
             print(f"ERROR in control loop: {e}")

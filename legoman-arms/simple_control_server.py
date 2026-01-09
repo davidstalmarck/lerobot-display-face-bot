@@ -23,15 +23,22 @@ try:
     import mediapipe as mp
     mp_hands = mp.solutions.hands
     mp_face_detection = mp.solutions.face_detection
+    mp_pose = mp.solutions.pose
     hands_detector = mp_hands.Hands(
         static_image_mode=False,
         max_num_hands=2,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
+        min_detection_confidence=0.3,
+        min_tracking_confidence=0.3
     )
     face_detector = mp_face_detection.FaceDetection(
         model_selection=0,
-        min_detection_confidence=0.5
+        min_detection_confidence=0.3
+    )
+    pose_detector = mp_pose.Pose(
+        static_image_mode=False,
+        model_complexity=1,
+        min_detection_confidence=0.3,
+        min_tracking_confidence=0.3
     )
     mediapipe_available = True
     print("✓ MediaPipe loaded successfully")
@@ -41,6 +48,7 @@ except Exception as e:
     mediapipe_available = False
     hands_detector = None
     face_detector = None
+    pose_detector = None
 
 app = Flask(__name__)
 CORS(app)
@@ -80,6 +88,11 @@ latest_description = "Starting up..."
 detection_lock = threading.Lock()
 last_frame_for_llm = None
 last_llm_time = 0
+
+# Arm tracking state
+arm_tracking_enabled = False
+arm_tracking_thread = None
+arm_tracking_lock = threading.Lock()
 
 # LLM configuration
 OLLAMA_URL = "http://localhost:11434/api/generate"
@@ -243,6 +256,180 @@ def detect_faces_and_hands(frame):
     return detections
 
 
+def detect_and_track_arm(frame):
+    """Detect user's arm and return tracking information"""
+    if not mediapipe_available or pose_detector is None:
+        return None
+
+    # Convert BGR to RGB for MediaPipe
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    height, width = frame.shape[:2]
+
+    try:
+        pose_results = pose_detector.process(frame_rgb)
+
+        if pose_results.pose_landmarks:
+            landmarks = pose_results.pose_landmarks.landmark
+
+            # Get right arm landmarks (use left arm if user faces camera)
+            # Using LEFT side landmarks because user faces camera (their left = our right)
+            shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
+            elbow = landmarks[mp_pose.PoseLandmark.LEFT_ELBOW]
+            wrist = landmarks[mp_pose.PoseLandmark.LEFT_WRIST]
+
+            # Draw arm skeleton
+            def draw_point(landmark, color):
+                cx = int(landmark.x * width)
+                cy = int(landmark.y * height)
+                cv2.circle(frame, (cx, cy), 8, color, -1)
+                return cx, cy
+
+            shoulder_pos = draw_point(shoulder, (255, 0, 0))  # Blue
+            elbow_pos = draw_point(elbow, (0, 255, 0))  # Green
+            wrist_pos = draw_point(wrist, (0, 0, 255))  # Red
+
+            # Draw arm lines
+            cv2.line(frame, shoulder_pos, elbow_pos, (255, 255, 0), 3)
+            cv2.line(frame, elbow_pos, wrist_pos, (255, 255, 0), 3)
+
+            # Calculate angles
+            import math
+
+            # Shoulder angle (horizontal)
+            shoulder_angle_x = math.degrees(math.atan2(elbow.y - shoulder.y, elbow.x - shoulder.x))
+
+            # Elbow angle
+            upper_arm_vec = (elbow.x - shoulder.x, elbow.y - shoulder.y)
+            forearm_vec = (wrist.x - elbow.x, wrist.y - elbow.y)
+
+            dot_product = upper_arm_vec[0] * forearm_vec[0] + upper_arm_vec[1] * forearm_vec[1]
+            upper_arm_len = math.sqrt(upper_arm_vec[0]**2 + upper_arm_vec[1]**2)
+            forearm_len = math.sqrt(forearm_vec[0]**2 + forearm_vec[1]**2)
+
+            if upper_arm_len > 0 and forearm_len > 0:
+                cos_angle = dot_product / (upper_arm_len * forearm_len)
+                cos_angle = max(-1.0, min(1.0, cos_angle))  # Clamp to [-1, 1]
+                elbow_angle = math.degrees(math.acos(cos_angle))
+            else:
+                elbow_angle = 0
+
+            # Shoulder lift angle (vertical)
+            shoulder_angle_y = shoulder.y - elbow.y
+
+            # Wrist angle
+            wrist_angle = math.degrees(math.atan2(wrist.y - elbow.y, wrist.x - elbow.x))
+
+            return {
+                'shoulder': (shoulder.x, shoulder.y, shoulder.z),
+                'elbow': (elbow.x, elbow.y, elbow.z),
+                'wrist': (wrist.x, wrist.y, wrist.z),
+                'shoulder_angle_x': shoulder_angle_x,
+                'shoulder_angle_y': shoulder_angle_y,
+                'elbow_angle': elbow_angle,
+                'wrist_angle': wrist_angle
+            }
+    except Exception as e:
+        print(f"Arm tracking error: {e}")
+
+    return None
+
+
+def map_arm_to_motors(arm_data):
+    """Map arm angles to motor positions"""
+    if arm_data is None:
+        return None
+
+    # Motor ranges (approximate, may need tuning)
+    SHOULDER_PAN_MIN = 1500
+    SHOULDER_PAN_MAX = 2600
+    SHOULDER_PAN_CENTER = 2048
+
+    SHOULDER_LIFT_MIN = 1000
+    SHOULDER_LIFT_MAX = 2000
+    SHOULDER_LIFT_CENTER = 1348
+
+    ELBOW_FLEX_MIN = 1500
+    ELBOW_FLEX_MAX = 2800
+    ELBOW_FLEX_CENTER = 2248
+
+    WRIST_FLEX_MIN = 1800
+    WRIST_FLEX_MAX = 2800
+    WRIST_FLEX_CENTER = 2348
+
+    # Map shoulder horizontal angle to shoulder_pan
+    # arm_data['shoulder_angle_x'] ranges from -180 to 180
+    shoulder_pan = SHOULDER_PAN_CENTER + int((arm_data['shoulder_angle_x'] + 90) * (SHOULDER_PAN_MAX - SHOULDER_PAN_MIN) / 180)
+    shoulder_pan = max(SHOULDER_PAN_MIN, min(SHOULDER_PAN_MAX, shoulder_pan))
+
+    # Map shoulder vertical position to shoulder_lift
+    # arm_data['shoulder_angle_y'] ranges from -1 to 1 (normalized)
+    shoulder_lift = SHOULDER_LIFT_CENTER - int(arm_data['shoulder_angle_y'] * 800)
+    shoulder_lift = max(SHOULDER_LIFT_MIN, min(SHOULDER_LIFT_MAX, shoulder_lift))
+
+    # Map elbow angle to elbow_flex
+    # elbow_angle ranges from 0 (straight) to 180 (bent)
+    elbow_flex = ELBOW_FLEX_CENTER + int((180 - arm_data['elbow_angle']) * 2)
+    elbow_flex = max(ELBOW_FLEX_MIN, min(ELBOW_FLEX_MAX, elbow_flex))
+
+    # Map wrist angle to wrist_flex
+    wrist_flex = WRIST_FLEX_CENTER + int((arm_data['wrist_angle'] + 90) * 2)
+    wrist_flex = max(WRIST_FLEX_MIN, min(WRIST_FLEX_MAX, wrist_flex))
+
+    return {
+        "shoulder_pan": shoulder_pan,
+        "shoulder_lift": shoulder_lift,
+        "elbow_flex": elbow_flex,
+        "wrist_flex": wrist_flex,
+        "wrist_roll": 3072  # Keep constant
+    }
+
+
+def arm_tracking_loop():
+    """Arm tracking control loop"""
+    global arm_tracking_enabled
+
+    cam = initialize_camera()
+
+    try:
+        bus = initialize_bus()
+        configure_motors_for_playback()  # Enable torque for controlled movement
+
+        print("Arm tracking started!")
+
+        while arm_tracking_enabled:
+            success, frame = cam.read()
+            if not success:
+                continue
+
+            # Detect arm
+            arm_data = detect_and_track_arm(frame)
+
+            if arm_data:
+                # Map to motor positions
+                motor_positions = map_arm_to_motors(arm_data)
+
+                if motor_positions:
+                    try:
+                        # Write positions to motors
+                        bus.write("Goal_Position",
+                                [motor_positions["shoulder_pan"],
+                                 motor_positions["shoulder_lift"],
+                                 motor_positions["elbow_flex"],
+                                 motor_positions["wrist_flex"],
+                                 motor_positions["wrist_roll"]],
+                                ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"])
+                    except Exception as e:
+                        print(f"Error writing motor positions: {e}")
+
+            # Small delay to prevent overwhelming the motors
+            time.sleep(0.05)  # 20 Hz update rate
+
+    except Exception as e:
+        print(f"Arm tracking loop error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 def detect_objects(frame):
     """Detect objects in frame"""
     global latest_detections, last_frame_for_llm
@@ -252,6 +439,14 @@ def detect_objects(frame):
 
     # Detect faces and hands first
     face_hand_detections = detect_faces_and_hands(frame)
+
+    # If arm tracking is enabled, also draw arm tracking
+    if arm_tracking_enabled:
+        arm_data = detect_and_track_arm(frame)
+        if arm_data:
+            # Draw "ARM TRACKING" indicator
+            cv2.putText(frame, "ARM TRACKING ACTIVE", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
     if use_yolo and net is not None:
         # YOLO detection
@@ -644,12 +839,93 @@ def status():
     """Get current status"""
     is_recording = recording_thread and recording_thread.is_alive()
     is_playing = playback_thread and playback_thread.is_alive()
+    is_arm_tracking = arm_tracking_thread and arm_tracking_thread.is_alive()
 
     return jsonify({
         "success": True,
         "recording": is_recording,
-        "playing": is_playing
+        "playing": is_playing,
+        "arm_tracking": is_arm_tracking,
+        "camera_index": CAMERA_INDEX
     })
+
+
+@app.route('/switch_camera', methods=['POST'])
+def switch_camera():
+    """Switch to next camera"""
+    global camera, CAMERA_INDEX
+
+    # Release current camera
+    if camera is not None:
+        camera.release()
+        camera = None
+
+    # Try next camera indices
+    max_cameras = 6
+    original_index = CAMERA_INDEX
+
+    for _ in range(max_cameras):
+        CAMERA_INDEX = (CAMERA_INDEX + 1) % max_cameras
+        try:
+            test_cam = cv2.VideoCapture(CAMERA_INDEX)
+            if test_cam.isOpened():
+                ret, _ = test_cam.read()
+                test_cam.release()
+                if ret:
+                    # Found a working camera
+                    print(f"Switched to camera {CAMERA_INDEX}")
+                    return jsonify({
+                        "success": True,
+                        "camera_index": CAMERA_INDEX,
+                        "message": f"Switched to camera {CAMERA_INDEX}"
+                    })
+        except Exception as e:
+            print(f"Camera {CAMERA_INDEX} failed: {e}")
+            continue
+
+    # If no camera found, restore original
+    CAMERA_INDEX = original_index
+    return jsonify({
+        "success": False,
+        "camera_index": CAMERA_INDEX,
+        "message": "No other working cameras found"
+    })
+
+
+@app.route('/start_arm_tracking', methods=['POST'])
+def start_arm_tracking():
+    """Start arm tracking mode"""
+    global arm_tracking_enabled, arm_tracking_thread
+
+    if not mediapipe_available or pose_detector is None:
+        return jsonify({"success": False, "message": "MediaPipe not available"})
+
+    if arm_tracking_thread and arm_tracking_thread.is_alive():
+        return jsonify({"success": False, "message": "Arm tracking already active"})
+
+    # Stop any recording or playback first
+    if (recording_thread and recording_thread.is_alive()) or (playback_thread and playback_thread.is_alive()):
+        return jsonify({"success": False, "message": "Stop recording/playback first"})
+
+    arm_tracking_enabled = True
+    arm_tracking_thread = threading.Thread(target=arm_tracking_loop, daemon=True)
+    arm_tracking_thread.start()
+
+    return jsonify({"success": True, "message": "Arm tracking started"})
+
+
+@app.route('/stop_arm_tracking', methods=['POST'])
+def stop_arm_tracking():
+    """Stop arm tracking mode"""
+    global arm_tracking_enabled, arm_tracking_thread
+
+    if not arm_tracking_thread or not arm_tracking_thread.is_alive():
+        return jsonify({"success": False, "message": "Arm tracking not active"})
+
+    arm_tracking_enabled = False
+    arm_tracking_thread.join(timeout=2)
+
+    return jsonify({"success": True, "message": "Arm tracking stopped"})
 
 
 if __name__ == "__main__":

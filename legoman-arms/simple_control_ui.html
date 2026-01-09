@@ -329,6 +329,20 @@
             background: linear-gradient(135deg, #fed6e3 0%, #a8edea 100%);
         }
 
+        #armTrackBtn {
+            background: linear-gradient(135deg, #fa8bff 0%, #2bd2ff 90%, #2bff88 100%);
+            color: white;
+        }
+
+        #armTrackBtn:hover:not(:disabled) {
+            background: linear-gradient(135deg, #2bff88 0%, #2bd2ff 10%, #fa8bff 100%);
+        }
+
+        #armTrackBtn.active {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+            animation: pulse 1.5s infinite;
+        }
+
         .status {
             text-align: center;
             padding: 15px;
@@ -390,7 +404,10 @@
         <div class="main-content">
             <div class="left-panel">
                 <div class="camera-section">
-                    <h2>Camera Feed</h2>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h2 style="margin: 0;">Camera Feed <span id="cameraIndex" style="font-size: 14px; color: #667eea; font-weight: normal;">(Camera 4)</span></h2>
+                        <button id="switchCameraBtn" style="padding: 8px 16px; font-size: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">📷 Switch Camera</button>
+                    </div>
                     <img id="cameraFeed" src="http://localhost:5001/video_feed" alt="Camera feed">
                     <div class="llm-description" id="llmDescription">🤖 Analyzing...</div>
                     <div class="detections" id="detections">Detecting objects...</div>
@@ -408,6 +425,7 @@
                     <button id="playBtn">▶️ Play</button>
                     <button id="stopBtn">⏹️ Stop</button>
                     <button id="relaxBtn">🌊 Relax</button>
+                    <button id="armTrackBtn">🤖 Follow My Arm</button>
                 </div>
 
                 <div class="speed-selector">
@@ -437,12 +455,16 @@
         const playBtn = document.getElementById('playBtn');
         const stopBtn = document.getElementById('stopBtn');
         const relaxBtn = document.getElementById('relaxBtn');
+        const armTrackBtn = document.getElementById('armTrackBtn');
+        const switchCameraBtn = document.getElementById('switchCameraBtn');
+        const cameraFeed = document.getElementById('cameraFeed');
         const status = document.getElementById('status');
         const recordingNameInput = document.getElementById('recordingName');
         const recordingsList = document.getElementById('recordingsList');
 
         let isRecording = false;
         let isPlaying = false;
+        let isArmTracking = false;
         let selectedSpeed = 1;
         let selectedRecording = null;
 
@@ -622,12 +644,75 @@
             }
         });
 
+        armTrackBtn.addEventListener('click', async () => {
+            if (isArmTracking) {
+                // Stop arm tracking
+                const result = await apiCall('stop_arm_tracking');
+                if (result.success) {
+                    isArmTracking = false;
+                    armTrackBtn.textContent = '🤖 Follow My Arm';
+                    armTrackBtn.classList.remove('active');
+                    updateStatus('Arm tracking stopped');
+                    recordBtn.disabled = false;
+                    playBtn.disabled = false;
+                }
+            } else {
+                // Start arm tracking
+                const result = await apiCall('start_arm_tracking');
+                if (result.success) {
+                    isArmTracking = true;
+                    armTrackBtn.textContent = '🛑 Stop Tracking';
+                    armTrackBtn.classList.add('active');
+                    updateStatus('Arm tracking active - Move your left arm!', 'playing');
+                    recordBtn.disabled = true;
+                    playBtn.disabled = true;
+                } else {
+                    updateStatus(result.message || 'Could not start arm tracking', 'error');
+                }
+            }
+        });
+
+        switchCameraBtn.addEventListener('click', async () => {
+            switchCameraBtn.disabled = true;
+            switchCameraBtn.textContent = '⏳ Switching...';
+
+            const result = await apiCall('switch_camera');
+
+            if (result.success) {
+                updateStatus(`Switched to camera ${result.camera_index}`, 'relaxed');
+                // Update camera index display
+                document.getElementById('cameraIndex').textContent = `(Camera ${result.camera_index})`;
+                // Force reload the video feed
+                const timestamp = new Date().getTime();
+                cameraFeed.src = `http://localhost:5001/video_feed?t=${timestamp}`;
+            } else {
+                updateStatus(result.message || 'Could not switch camera', 'error');
+            }
+
+            switchCameraBtn.disabled = false;
+            switchCameraBtn.textContent = '📷 Switch Camera';
+        });
+
+        // Update camera index on page load
+        async function updateCameraIndex() {
+            try {
+                const response = await fetch('http://localhost:5001/status');
+                const data = await response.json();
+                if (data.success && data.camera_index !== undefined) {
+                    document.getElementById('cameraIndex').textContent = `(Camera ${data.camera_index})`;
+                }
+            } catch (error) {
+                console.error('Status error:', error);
+            }
+        }
+
         // Initial state
         stopBtn.disabled = false;
         playBtn.disabled = false;
 
         // Load recordings on startup
         loadRecordings();
+        updateCameraIndex();
 
         // Poll for detections and LLM description
         async function updateDetections() {

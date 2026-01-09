@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robot Control</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: white;
+            min-height: 100vh;
+            height: 100vh;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+
+        .container {
+            background: white;
+            padding: 20px;
+            width: 100%;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .left-panel, .right-panel {
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .camera-section {
+            margin-bottom: 20px;
+        }
+
+        .camera-section h2 {
+            font-size: 18px;
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        #cameraFeed {
+            width: 100%;
+            border-radius: 12px;
+            border: 3px solid #dee2e6;
+            background: #f8f9fa;
+        }
+
+        .detections {
+            margin-top: 10px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            min-height: 60px;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .llm-description {
+            margin-top: 10px;
+            padding: 15px;
+            background: linear-gradient(135deg, #e0f7fa 0%, #e1bee7 100%);
+            border-radius: 8px;
+            min-height: 50px;
+            font-size: 14px;
+            color: #333;
+            font-weight: 500;
+            line-height: 1.5;
+            border-left: 4px solid #4facfe;
+        }
+
+        .detection-item {
+            display: inline-block;
+            margin: 3px;
+            padding: 5px 10px;
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            border-radius: 15px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 28px;
+            flex-shrink: 0;
+        }
+
+        .button-group {
+            display: grid;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        button {
+            padding: 20px;
+            font-size: 18px;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        #recordBtn {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+
+        #recordBtn:hover:not(:disabled) {
+            background: linear-gradient(135deg, #f5576c 0%, #f093fb 100%);
+        }
+
+        #playBtn {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+        }
+
+        #playBtn:hover:not(:disabled) {
+            background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+        }
+
+        .speed-selector {
+            margin-top: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+
+        .speed-selector label {
+            display: block;
+            margin-bottom: 10px;
+            font-size: 14px;
+            color: #666;
+            font-weight: 600;
+        }
+
+        .speed-buttons {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+        }
+
+        .speed-btn {
+            padding: 10px;
+            font-size: 14px;
+            border: 2px solid #dee2e6;
+            background: white;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .speed-btn:hover {
+            border-color: #4facfe;
+            background: #e7f5ff;
+            transform: translateY(-1px);
+        }
+
+        .speed-btn.active {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            border-color: #4facfe;
+        }
+
+        .recording-name-group {
+            margin-bottom: 20px;
+        }
+
+        .recording-name-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 14px;
+            color: #666;
+            font-weight: 600;
+        }
+
+        .recording-name-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #dee2e6;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.2s;
+        }
+
+        .recording-name-group input:focus {
+            outline: none;
+            border-color: #4facfe;
+        }
+
+        .recordings-list {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+
+        .recordings-list label {
+            display: block;
+            margin-bottom: 10px;
+            font-size: 14px;
+            color: #666;
+            font-weight: 600;
+        }
+
+        .recordings-items {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .recording-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            background: white;
+            border-radius: 8px;
+            border: 2px solid #dee2e6;
+            transition: all 0.2s;
+        }
+
+        .recording-item:hover {
+            border-color: #4facfe;
+            background: #e7f5ff;
+        }
+
+        .recording-item.selected {
+            border-color: #4facfe;
+            background: linear-gradient(135deg, #e7f5ff 0%, #f0f9ff 100%);
+        }
+
+        .recording-item-name {
+            font-weight: 600;
+            color: #333;
+            cursor: pointer;
+            flex: 1;
+        }
+
+        .recording-item-actions {
+            display: flex;
+            gap: 5px;
+        }
+
+        .recording-item-btn {
+            padding: 5px 10px;
+            font-size: 12px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            background: #dc3545;
+            color: white;
+            transition: all 0.2s;
+        }
+
+        .recording-item-btn:hover {
+            background: #c82333;
+            transform: scale(1.05);
+        }
+
+        .no-recordings {
+            text-align: center;
+            color: #999;
+            padding: 20px;
+            font-style: italic;
+        }
+
+        #stopBtn {
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+            color: white;
+        }
+
+        #stopBtn:hover:not(:disabled) {
+            background: linear-gradient(135deg, #fee140 0%, #fa709a 100%);
+        }
+
+        #relaxBtn {
+            background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+            color: #333;
+        }
+
+        #relaxBtn:hover:not(:disabled) {
+            background: linear-gradient(135deg, #fed6e3 0%, #a8edea 100%);
+        }
+
+        .status {
+            text-align: center;
+            padding: 15px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-size: 14px;
+            color: #666;
+            min-height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .status.recording {
+            background: #fff3cd;
+            color: #856404;
+            border: 2px solid #ffc107;
+        }
+
+        .status.playing {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 2px solid #17a2b8;
+        }
+
+        .status.relaxed {
+            background: #d4edda;
+            color: #155724;
+            border: 2px solid #28a745;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 2px solid #dc3545;
+        }
+
+        .recording-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            background: #f5576c;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Robot Control</h1>
+
+        <div class="main-content">
+            <div class="left-panel">
+                <div class="camera-section">
+                    <h2>Camera Feed</h2>
+                    <img id="cameraFeed" src="http://localhost:5001/video_feed" alt="Camera feed">
+                    <div class="llm-description" id="llmDescription">🤖 Analyzing...</div>
+                    <div class="detections" id="detections">Detecting objects...</div>
+                </div>
+            </div>
+
+            <div class="right-panel">
+                <div class="recording-name-group">
+                    <label for="recordingName">Recording Name:</label>
+                    <input type="text" id="recordingName" placeholder="e.g., wave_hello" value="my_recording">
+                </div>
+
+                <div class="button-group">
+                    <button id="recordBtn">🔴 Record</button>
+                    <button id="playBtn">▶️ Play</button>
+                    <button id="stopBtn">⏹️ Stop</button>
+                    <button id="relaxBtn">🌊 Relax</button>
+                </div>
+
+                <div class="speed-selector">
+                    <label>Playback Speed:</label>
+                    <div class="speed-buttons">
+                        <button class="speed-btn active" data-speed="1">1x</button>
+                        <button class="speed-btn" data-speed="1.25">1.25x</button>
+                        <button class="speed-btn" data-speed="1.5">1.5x</button>
+                        <button class="speed-btn" data-speed="2">2x</button>
+                    </div>
+                </div>
+
+                <div class="recordings-list">
+                    <label>Saved Recordings:</label>
+                    <div id="recordingsList" class="recordings-items">
+                        <div class="no-recordings">No recordings yet</div>
+                    </div>
+                </div>
+
+                <div class="status" id="status">Ready</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const recordBtn = document.getElementById('recordBtn');
+        const playBtn = document.getElementById('playBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const relaxBtn = document.getElementById('relaxBtn');
+        const status = document.getElementById('status');
+        const recordingNameInput = document.getElementById('recordingName');
+        const recordingsList = document.getElementById('recordingsList');
+
+        let isRecording = false;
+        let isPlaying = false;
+        let selectedSpeed = 1;
+        let selectedRecording = null;
+
+        async function apiCall(endpoint, body = null) {
+            try {
+                const options = {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                };
+                if (body) {
+                    options.body = JSON.stringify(body);
+                }
+                const response = await fetch(`http://localhost:5001/${endpoint}`, options);
+                const data = await response.json();
+                return data;
+            } catch (error) {
+                console.error('API Error:', error);
+                updateStatus('Connection error', 'error');
+                return { success: false, message: error.message };
+            }
+        }
+
+        async function loadRecordings() {
+            const result = await fetch('http://localhost:5001/list_recordings');
+            const data = await result.json();
+
+            if (data.success && data.recordings.length > 0) {
+                recordingsList.innerHTML = '';
+                data.recordings.forEach(name => {
+                    const item = document.createElement('div');
+                    item.className = 'recording-item';
+                    if (name === selectedRecording) {
+                        item.classList.add('selected');
+                    }
+
+                    const nameSpan = document.createElement('span');
+                    nameSpan.className = 'recording-item-name';
+                    nameSpan.textContent = name;
+                    nameSpan.onclick = () => selectRecording(name);
+
+                    const actions = document.createElement('div');
+                    actions.className = 'recording-item-actions';
+
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = 'recording-item-btn';
+                    deleteBtn.textContent = '🗑️';
+                    deleteBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        deleteRecording(name);
+                    };
+
+                    actions.appendChild(deleteBtn);
+                    item.appendChild(nameSpan);
+                    item.appendChild(actions);
+                    recordingsList.appendChild(item);
+                });
+            } else {
+                recordingsList.innerHTML = '<div class="no-recordings">No recordings yet</div>';
+            }
+        }
+
+        function selectRecording(name) {
+            selectedRecording = name;
+            recordingNameInput.value = name;
+            loadRecordings();
+        }
+
+        async function deleteRecording(name) {
+            if (confirm(`Delete recording "${name}"?`)) {
+                const result = await apiCall('delete_recording', { name });
+                if (result.success) {
+                    updateStatus(`Deleted "${name}"`);
+                    if (selectedRecording === name) {
+                        selectedRecording = null;
+                    }
+                    loadRecordings();
+                }
+            }
+        }
+
+        function updateStatus(message, type = '') {
+            status.textContent = message;
+            status.className = 'status ' + type;
+
+            if (type === 'recording') {
+                const indicator = document.createElement('span');
+                indicator.className = 'recording-indicator';
+                status.insertBefore(indicator, status.firstChild);
+            }
+        }
+
+        // Speed selector
+        document.querySelectorAll('.speed-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                selectedSpeed = parseFloat(btn.dataset.speed);
+            });
+        });
+
+        recordBtn.addEventListener('click', async () => {
+            if (isRecording) {
+                // Stop recording
+                const result = await apiCall('stop_record');
+                if (result.success) {
+                    isRecording = false;
+                    recordBtn.textContent = '🔴 Record';
+                    updateStatus(result.message);
+                    playBtn.disabled = false;
+                    loadRecordings();
+                }
+            } else {
+                // Start recording
+                const name = recordingNameInput.value.trim();
+                if (!name) {
+                    updateStatus('Please enter a recording name', 'error');
+                    return;
+                }
+                const result = await apiCall('start_record', { name });
+                if (result.success) {
+                    isRecording = true;
+                    recordBtn.textContent = '⏸️ Stop Recording';
+                    updateStatus('Recording... Move the robot freely', 'recording');
+                    playBtn.disabled = true;
+                    stopBtn.disabled = false;
+                }
+            }
+        });
+
+        playBtn.addEventListener('click', async () => {
+            const name = recordingNameInput.value.trim();
+            if (!name) {
+                updateStatus('Please select a recording', 'error');
+                return;
+            }
+            const result = await apiCall('play', { name, speed: selectedSpeed });
+            if (result.success) {
+                isPlaying = true;
+                updateStatus(`Playing "${name}" at ${selectedSpeed}x speed...`, 'playing');
+                playBtn.disabled = true;
+                recordBtn.disabled = true;
+                stopBtn.disabled = false;
+
+                // Auto re-enable after playback (approximate)
+                const duration = result.duration || 10;
+                setTimeout(() => {
+                    if (isPlaying) {
+                        isPlaying = false;
+                        playBtn.disabled = false;
+                        recordBtn.disabled = false;
+                        updateStatus('Playback complete');
+                    }
+                }, (duration / selectedSpeed) * 1000);
+            } else {
+                updateStatus(result.message || 'Recording not found', 'error');
+            }
+        });
+
+        stopBtn.addEventListener('click', async () => {
+            const result = await apiCall('stop');
+            if (result.success) {
+                isRecording = false;
+                isPlaying = false;
+                recordBtn.textContent = '🔴 Record';
+                recordBtn.disabled = false;
+                playBtn.disabled = false;
+                updateStatus('Stopped');
+            }
+        });
+
+        relaxBtn.addEventListener('click', async () => {
+            const result = await apiCall('relax');
+            if (result.success) {
+                updateStatus('Motors relaxed - you can move the robot freely', 'relaxed');
+            }
+        });
+
+        // Initial state
+        stopBtn.disabled = false;
+        playBtn.disabled = false;
+
+        // Load recordings on startup
+        loadRecordings();
+
+        // Poll for detections and LLM description
+        async function updateDetections() {
+            try {
+                const response = await fetch('http://localhost:5001/detections');
+                const data = await response.json();
+
+                // Update LLM description
+                const llmDiv = document.getElementById('llmDescription');
+                if (data.success && data.description) {
+                    llmDiv.textContent = '🤖 ' + data.description;
+                }
+
+                // Update detections
+                const detectionsDiv = document.getElementById('detections');
+                if (data.success && data.detections && data.detections.length > 0) {
+                    detectionsDiv.innerHTML = data.detections
+                        .map(det => `<span class="detection-item">${det}</span>`)
+                        .join('');
+                } else {
+                    detectionsDiv.textContent = 'No objects detected';
+                }
+            } catch (error) {
+                console.error('Detection error:', error);
+            }
+        }
+
+        // Update detections every 500ms
+        setInterval(updateDetections, 500);
+        updateDetections();
+    </script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "arm": "leader",
+  "frequency": 20,
+  "duration": 0.0009002685546875,
+  "motor_names": [
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_roll"
+  ],
+  "frames": []
+}

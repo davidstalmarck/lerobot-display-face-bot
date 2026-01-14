@@ -206,6 +206,51 @@
             border-color: #4facfe;
         }
 
+        .arm-btn {
+            padding: 10px;
+            font-size: 14px;
+            border: 2px solid #dee2e6;
+            background: white;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .arm-btn:hover {
+            border-color: #fa8bff;
+            background: #fef0ff;
+            transform: translateY(-1px);
+        }
+
+        .arm-btn.active {
+            background: linear-gradient(135deg, #fa8bff 0%, #2bd2ff 100%);
+            color: white;
+            border-color: #fa8bff;
+        }
+
+        .arm-status {
+            margin-top: 10px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .arm-status-item {
+            margin: 8px 0;
+            padding: 8px;
+            background: white;
+            border-radius: 5px;
+            border-left: 3px solid #28a745;
+        }
+
+        .arm-status-item.disconnected {
+            border-left-color: #dc3545;
+        }
+
         .recording-name-group {
             margin-bottom: 20px;
         }
@@ -421,6 +466,36 @@
                 </div>
 
                 <div class="button-group">
+                    <button id="checkArmsBtn" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">🔍 Check Arms Status</button>
+                </div>
+
+                <div id="armStatus" class="arm-status" style="display: none;"></div>
+
+                <div class="speed-selector" style="margin-top: 0;">
+                    <label>Arm Calibration (Movement Scale):</label>
+                    <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                        <div style="flex: 1;">
+                            <label style="font-size: 12px; color: #666;">👈 Left (0): <span id="arm0ScaleValue">0.8</span></label>
+                            <input type="range" id="arm0Scale" min="0.5" max="1.5" step="0.05" value="0.8" style="width: 100%;">
+                        </div>
+                        <div style="flex: 1;">
+                            <label style="font-size: 12px; color: #666;">👉 Right (1): <span id="arm1ScaleValue">1.0</span></label>
+                            <input type="range" id="arm1Scale" min="0.5" max="1.5" step="0.05" value="1.0" style="width: 100%;">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="speed-selector" style="margin-top: 0;">
+                    <label>Select Arm(s):</label>
+                    <div class="speed-buttons">
+                        <button class="arm-btn active" data-arm="both">🤖 Both</button>
+                        <button class="arm-btn" data-arm="0">👈 Left (0)</button>
+                        <button class="arm-btn" data-arm="1">👉 Right (1)</button>
+                        <button class="arm-btn" data-arm="swap" style="background: linear-gradient(135deg, #fa8bff 0%, #2bd2ff 100%); color: white;">🔄 Swap</button>
+                    </div>
+                </div>
+
+                <div class="button-group">
                     <button id="recordBtn">🔴 Record</button>
                     <button id="playBtn">▶️ Play</button>
                     <button id="stopBtn">⏹️ Stop</button>
@@ -457,6 +532,8 @@
         const relaxBtn = document.getElementById('relaxBtn');
         const armTrackBtn = document.getElementById('armTrackBtn');
         const switchCameraBtn = document.getElementById('switchCameraBtn');
+        const checkArmsBtn = document.getElementById('checkArmsBtn');
+        const armStatus = document.getElementById('armStatus');
         const cameraFeed = document.getElementById('cameraFeed');
         const status = document.getElementById('status');
         const recordingNameInput = document.getElementById('recordingName');
@@ -466,6 +543,7 @@
         let isPlaying = false;
         let isArmTracking = false;
         let selectedSpeed = 1;
+        let selectedArm = 'both';
         let selectedRecording = null;
 
         async function apiCall(endpoint, body = null) {
@@ -567,6 +645,133 @@
             });
         });
 
+        // Arm selector
+        document.querySelectorAll('.arm-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const arm = btn.dataset.arm;
+
+                if (arm === 'swap') {
+                    // Swap arms
+                    const result = await apiCall('swap_arms');
+                    if (result.success) {
+                        updateStatus('Arms swapped! ACM0 ↔ ACM1', 'relaxed');
+                    } else {
+                        updateStatus(result.message || 'Failed to swap arms', 'error');
+                    }
+                } else {
+                    // Select arm
+                    document.querySelectorAll('.arm-btn').forEach(b => {
+                        if (b.dataset.arm !== 'swap') {
+                            b.classList.remove('active');
+                        }
+                    });
+                    btn.classList.add('active');
+                    selectedArm = arm;
+                    updateStatus(`Selected: ${arm === 'both' ? 'Both arms' : arm === '0' ? 'Left arm (ACM0)' : 'Right arm (ACM1)'}`);
+                }
+            });
+        });
+
+        // Arm scale sliders
+        const arm0ScaleSlider = document.getElementById('arm0Scale');
+        const arm1ScaleSlider = document.getElementById('arm1Scale');
+        const arm0ScaleValue = document.getElementById('arm0ScaleValue');
+        const arm1ScaleValue = document.getElementById('arm1ScaleValue');
+
+        // Load current scales from server
+        async function loadArmScales() {
+            try {
+                const response = await fetch('http://localhost:5001/get_arm_scales');
+                const data = await response.json();
+                if (data.success) {
+                    arm0ScaleSlider.value = data.arm0_scale;
+                    arm1ScaleSlider.value = data.arm1_scale;
+                    arm0ScaleValue.textContent = data.arm0_scale.toFixed(2);
+                    arm1ScaleValue.textContent = data.arm1_scale.toFixed(2);
+                }
+            } catch (error) {
+                console.error('Failed to load arm scales:', error);
+            }
+        }
+
+        arm0ScaleSlider.addEventListener('input', async () => {
+            const scale = parseFloat(arm0ScaleSlider.value);
+            arm0ScaleValue.textContent = scale.toFixed(2);
+        });
+
+        arm0ScaleSlider.addEventListener('change', async () => {
+            const scale = parseFloat(arm0ScaleSlider.value);
+            const result = await apiCall('set_arm_scale', { arm: '0', scale });
+            if (result.success) {
+                updateStatus(result.message, 'relaxed');
+            }
+        });
+
+        arm1ScaleSlider.addEventListener('input', async () => {
+            const scale = parseFloat(arm1ScaleSlider.value);
+            arm1ScaleValue.textContent = scale.toFixed(2);
+        });
+
+        arm1ScaleSlider.addEventListener('change', async () => {
+            const scale = parseFloat(arm1ScaleSlider.value);
+            const result = await apiCall('set_arm_scale', { arm: '1', scale });
+            if (result.success) {
+                updateStatus(result.message, 'relaxed');
+            }
+        });
+
+        // Check arms status
+        checkArmsBtn.addEventListener('click', async () => {
+            checkArmsBtn.disabled = true;
+            checkArmsBtn.textContent = '⏳ Checking...';
+
+            try {
+                const response = await fetch('http://localhost:5001/check_arms');
+                const data = await response.json();
+
+                if (data.success) {
+                    let statusHtml = '<strong>Arm Status:</strong><br>';
+
+                    // Arm 0 status
+                    const arm0Class = data.arm0.connected ? '' : 'disconnected';
+                    const arm0Icon = data.arm0.connected ? '✅' : '❌';
+                    statusHtml += `<div class="arm-status-item ${arm0Class}">`;
+                    statusHtml += `${arm0Icon} <strong>Left Arm (ACM0)</strong> - ${data.arm0.port}<br>`;
+                    if (data.arm0.connected) {
+                        statusHtml += `Connected | Motors: ${Object.keys(data.arm0.positions).length}`;
+                    } else {
+                        statusHtml += `Disconnected${data.arm0.error ? ': ' + data.arm0.error : ''}`;
+                    }
+                    statusHtml += '</div>';
+
+                    // Arm 1 status
+                    const arm1Class = data.arm1.connected ? '' : 'disconnected';
+                    const arm1Icon = data.arm1.connected ? '✅' : '❌';
+                    statusHtml += `<div class="arm-status-item ${arm1Class}">`;
+                    statusHtml += `${arm1Icon} <strong>Right Arm (ACM1)</strong> - ${data.arm1.port}<br>`;
+                    if (data.arm1.connected) {
+                        statusHtml += `Connected | Motors: ${Object.keys(data.arm1.positions).length}`;
+                    } else {
+                        statusHtml += `Disconnected${data.arm1.error ? ': ' + data.arm1.error : ''}`;
+                    }
+                    statusHtml += '</div>';
+
+                    armStatus.innerHTML = statusHtml;
+                    armStatus.style.display = 'block';
+
+                    updateStatus('Arm check complete', 'relaxed');
+                } else {
+                    updateStatus('Failed to check arms', 'error');
+                }
+            } catch (error) {
+                console.error('Check arms error:', error);
+                updateStatus('Connection error', 'error');
+            }
+
+            checkArmsBtn.disabled = false;
+            checkArmsBtn.textContent = '🔍 Check Arms Status';
+        });
+
         recordBtn.addEventListener('click', async () => {
             if (isRecording) {
                 // Stop recording
@@ -585,11 +790,12 @@
                     updateStatus('Please enter a recording name', 'error');
                     return;
                 }
-                const result = await apiCall('start_record', { name });
+                const result = await apiCall('record_arm', { name, arm: selectedArm });
                 if (result.success) {
                     isRecording = true;
                     recordBtn.textContent = '⏸️ Stop Recording';
-                    updateStatus('Recording... Move the robot freely', 'recording');
+                    const armText = selectedArm === 'both' ? 'both arms' : selectedArm === '0' ? 'left arm' : 'right arm';
+                    updateStatus(`Recording ${armText}... Move the robot freely`, 'recording');
                     playBtn.disabled = true;
                     stopBtn.disabled = false;
                 }
@@ -602,10 +808,11 @@
                 updateStatus('Please select a recording', 'error');
                 return;
             }
-            const result = await apiCall('play', { name, speed: selectedSpeed });
+            const result = await apiCall('play_arm', { name, speed: selectedSpeed, arm: selectedArm });
             if (result.success) {
                 isPlaying = true;
-                updateStatus(`Playing "${name}" at ${selectedSpeed}x speed...`, 'playing');
+                const armText = selectedArm === 'both' ? 'both arms' : selectedArm === '0' ? 'left arm' : 'right arm';
+                updateStatus(`Playing "${name}" on ${armText} at ${selectedSpeed}x speed...`, 'playing');
                 playBtn.disabled = true;
                 recordBtn.disabled = true;
                 stopBtn.disabled = false;
@@ -710,9 +917,10 @@
         stopBtn.disabled = false;
         playBtn.disabled = false;
 
-        // Load recordings on startup
+        // Load recordings and settings on startup
         loadRecordings();
         updateCameraIndex();
+        loadArmScales();
 
         // Poll for detections and LLM description
         async function updateDetections() {

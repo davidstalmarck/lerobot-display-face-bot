@@ -68,14 +68,20 @@ app = Flask(__name__)
 CORS(app)
 
 # Configuration
-PORT = "/dev/ttyACM0"  # Leader arm
+PORT_ARM0 = "/dev/ttyACM0"  # First arm (Left)
+PORT_ARM1 = "/dev/ttyACM1"  # Second arm (Right)
 RECORDING_DIR = Path(__file__).parent / "recordings"
 RECORDING_DIR.mkdir(exist_ok=True)
 CAMERA_INDEX = 4  # Use external camera (change to 0 for built-in, 2 or 4 for external)
 
+# Per-arm calibration/scaling (adjust if one arm moves too much/little)
+# Scale factor: 1.0 = normal, <1.0 = reduce movement, >1.0 = increase movement
+ARM0_SCALE = 0.8  # Left arm scale (reduce to 80% if moving too much)
+ARM1_SCALE = 1.0  # Right arm scale
+
 # Motor configuration (5 motors, motor 6 disabled)
-MOTOR_CONFIG = FeetechMotorsBusConfig(
-    port=PORT,
+MOTOR_CONFIG_ARM0 = FeetechMotorsBusConfig(
+    port=PORT_ARM0,
     motors={
         "shoulder_pan": [1, "sts3215"],
         "shoulder_lift": [2, "sts3215"],
@@ -85,10 +91,22 @@ MOTOR_CONFIG = FeetechMotorsBusConfig(
     }
 )
 
-MOTOR_NAMES = list(MOTOR_CONFIG.motors.keys())
+MOTOR_CONFIG_ARM1 = FeetechMotorsBusConfig(
+    port=PORT_ARM1,
+    motors={
+        "shoulder_pan": [1, "sts3215"],
+        "shoulder_lift": [2, "sts3215"],
+        "elbow_flex": [3, "sts3215"],
+        "wrist_flex": [4, "sts3215"],
+        "wrist_roll": [5, "sts3215"],
+    }
+)
+
+MOTOR_NAMES = list(MOTOR_CONFIG_ARM0.motors.keys())
 
 # Global state
-bus = None
+bus_arm0 = None
+bus_arm1 = None
 recording_thread = None
 playback_thread = None
 stop_flag = threading.Event()
@@ -144,17 +162,29 @@ except Exception as e:
     net = None
 
 
-def initialize_bus():
-    """Initialize motor bus connection"""
-    global bus
-    if bus is None:
-        bus = FeetechMotorsBus(MOTOR_CONFIG)
-        bus.connect()
-    elif not bus.is_connected:
-        # Reconnect if bus exists but is disconnected
-        print("Reconnecting motor bus...")
-        bus.connect()
-    return bus
+def initialize_buses():
+    """Initialize both motor bus connections"""
+    global bus_arm0, bus_arm1
+
+    # Initialize arm 0
+    if bus_arm0 is None:
+        bus_arm0 = FeetechMotorsBus(MOTOR_CONFIG_ARM0)
+        bus_arm0.connect()
+        print(f"✓ Arm 0 connected ({PORT_ARM0})")
+    elif not bus_arm0.is_connected:
+        print("Reconnecting arm 0...")
+        bus_arm0.connect()
+
+    # Initialize arm 1
+    if bus_arm1 is None:
+        bus_arm1 = FeetechMotorsBus(MOTOR_CONFIG_ARM1)
+        bus_arm1.connect()
+        print(f"✓ Arm 1 connected ({PORT_ARM1})")
+    elif not bus_arm1.is_connected:
+        print("Reconnecting arm 1...")
+        bus_arm1.connect()
+
+    return bus_arm0, bus_arm1
 
 
 def initialize_camera():
@@ -429,16 +459,16 @@ def map_arm_to_motors(arm_data):
 
 
 def arm_tracking_loop():
-    """Arm tracking control loop"""
+    """Arm tracking control loop - controls arm0 only"""
     global arm_tracking_enabled
 
     cam = initialize_camera()
 
     try:
-        bus = initialize_bus()
+        bus_arm0, bus_arm1 = initialize_buses()
         configure_motors_for_playback()  # Enable torque for controlled movement
 
-        print("Arm tracking started!")
+        print("Arm tracking started (controlling arm0)!")
 
         while arm_tracking_enabled:
             success, frame = cam.read()
@@ -454,8 +484,8 @@ def arm_tracking_loop():
 
                 if motor_positions:
                     try:
-                        # Write positions to motors
-                        bus.write("Goal_Position",
+                        # Write positions to motors (arm0 only for now)
+                        bus_arm0.write("Goal_Position",
                                 [motor_positions["shoulder_pan"],
                                  motor_positions["shoulder_lift"],
                                  motor_positions["elbow_flex"],
@@ -586,54 +616,70 @@ def generate_frames():
 
 def configure_motors_for_recording():
     """Configure motors for recording mode (torque disabled)"""
-    bus = initialize_bus()
+    bus_arm0, bus_arm1 = initialize_buses()
     print("Disabling torque for manual movement...")
-    bus.write("Torque_Enable", 0)
+    bus_arm0.write("Torque_Enable", 0)
+    bus_arm1.write("Torque_Enable", 0)
 
 
 def configure_motors_for_playback():
     """Configure motors for playback mode (torque enabled with smooth settings)"""
-    bus = initialize_bus()
+    bus_arm0, bus_arm1 = initialize_buses()
     print("Enabling torque for playback...")
-    bus.write("Mode", 0)  # Position control mode
-    bus.write("P_Coefficient", 16)
-    bus.write("I_Coefficient", 0)
-    bus.write("D_Coefficient", 32)
-    bus.write("Lock", 0)
-    bus.write("Maximum_Acceleration", 254)
-    bus.write("Acceleration", 150)  # Smooth speed
-    bus.write("Torque_Enable", 1)
+
+    for bus in [bus_arm0, bus_arm1]:
+        bus.write("Mode", 0)  # Position control mode
+        bus.write("P_Coefficient", 16)
+        bus.write("I_Coefficient", 0)
+        bus.write("D_Coefficient", 32)
+        bus.write("Lock", 0)
+        bus.write("Maximum_Acceleration", 254)
+        bus.write("Acceleration", 150)  # Smooth speed
+        bus.write("Torque_Enable", 1)
 
 
 def record_loop(name):
-    """Recording loop - reads positions at fixed frequency"""
+    """Recording loop - reads positions at fixed frequency from both arms"""
+    record_loop_arm(name, 'both')
+
+
+def record_loop_arm(name, arm='both'):
+    """Recording loop - reads positions from specified arm(s)
+    Args:
+        name: recording name
+        arm: 'both', '0', or '1'
+    """
     global current_recording
     current_recording = []
 
-    bus = None
+    bus_arm0 = None
+    bus_arm1 = None
     start_time = time.time()
     frequency = 20  # Hz
 
     try:
-        bus = initialize_bus()
+        bus_arm0, bus_arm1 = initialize_buses()
         configure_motors_for_recording()
 
         interval = 1.0 / frequency
 
-        print(f"Recording '{name}' started...")
+        print(f"Recording '{name}' started (arm: {arm})...")
 
         while not stop_flag.is_set():
             loop_start = time.time()
 
             try:
-                # Read current positions
-                positions = bus.read("Present_Position", MOTOR_NAMES)
+                frame = {"time": time.time() - start_time}
 
-                # Store frame (convert numpy types to Python native types for JSON serialization)
-                frame = {
-                    "time": time.time() - start_time,
-                    "positions": {name: int(pos) for name, pos in zip(MOTOR_NAMES, positions)}
-                }
+                # Read positions based on which arm(s) to record
+                if arm == 'both' or arm == '0':
+                    positions_arm0 = bus_arm0.read("Present_Position", MOTOR_NAMES)
+                    frame["arm0_positions"] = {name: int(pos) for name, pos in zip(MOTOR_NAMES, positions_arm0)}
+
+                if arm == 'both' or arm == '1':
+                    positions_arm1 = bus_arm1.read("Present_Position", MOTOR_NAMES)
+                    frame["arm1_positions"] = {name: int(pos) for name, pos in zip(MOTOR_NAMES, positions_arm1)}
+
                 current_recording.append(frame)
             except Exception as e:
                 print(f"Error reading motor positions: {e}")
@@ -645,7 +691,7 @@ def record_loop(name):
                 time.sleep(interval - elapsed)
 
     except Exception as e:
-        print(f"ERROR in record_loop: {e}")
+        print(f"ERROR in record_loop_arm: {e}")
         import traceback
         traceback.print_exc()
 
@@ -654,7 +700,7 @@ def record_loop(name):
         try:
             duration = time.time() - start_time
             recording_data = {
-                "arm": "leader",
+                "arms": arm,  # Store which arm(s) were recorded
                 "frequency": frequency,
                 "duration": duration,
                 "motor_names": MOTOR_NAMES,
@@ -665,7 +711,7 @@ def record_loop(name):
             with open(recording_file, 'w') as f:
                 json.dump(recording_data, f, indent=2)
 
-            print(f"Recording '{name}' saved: {len(current_recording)} frames, {duration:.2f} seconds")
+            print(f"Recording '{name}' saved: {len(current_recording)} frames, {duration:.2f} seconds (arm: {arm})")
         except Exception as e:
             print(f"CRITICAL ERROR saving recording '{name}': {e}")
             import traceback
@@ -673,14 +719,24 @@ def record_loop(name):
 
 
 def playback_loop(name, speed=1.0):
-    """Playback loop - replays recorded movements"""
+    """Playback loop - replays recorded movements on both arms"""
+    playback_loop_arm(name, speed, 'both')
+
+
+def playback_loop_arm(name, speed=1.0, arm='both'):
+    """Playback loop - replays recorded movements on specified arm(s)
+    Args:
+        name: recording name
+        speed: playback speed multiplier
+        arm: 'both', '0', or '1' - which arm(s) to play on
+    """
     recording_file = RECORDING_DIR / f"{name}.json"
     if not recording_file.exists():
         print(f"Recording '{name}' not found")
         return
 
     try:
-        bus = initialize_bus()
+        bus_arm0, bus_arm1 = initialize_buses()
         configure_motors_for_playback()
 
         # Load recording
@@ -689,8 +745,9 @@ def playback_loop(name, speed=1.0):
 
         frames = recording_data["frames"]
         motor_names = recording_data["motor_names"]
+        recorded_arms = recording_data.get("arms", "leader")  # Get which arms were recorded
 
-        print(f"Playing back '{name}': {len(frames)} frames at {speed}x speed...")
+        print(f"Playing back '{name}': {len(frames)} frames at {speed}x speed on arm: {arm}...")
 
         start_time = time.time()
 
@@ -707,9 +764,42 @@ def playback_loop(name, speed=1.0):
                 time.sleep(wait_time)
 
             try:
-                # Write positions
-                positions = [frame["positions"][name] for name in motor_names]
-                bus.write("Goal_Position", positions, motor_names)
+                # Play on arm0 if requested
+                if arm == 'both' or arm == '0':
+                    if "arm0_positions" in frame:
+                        positions_arm0 = [frame["arm0_positions"][name] for name in motor_names]
+                        # Apply scaling for arm0
+                        if ARM0_SCALE != 1.0:
+                            center = 2048  # Center position for servos
+                            positions_arm0 = [int(center + (pos - center) * ARM0_SCALE) for pos in positions_arm0]
+                        bus_arm0.write("Goal_Position", positions_arm0, motor_names)
+                    elif "positions" in frame:
+                        # Legacy format - single arm recording
+                        positions = [frame["positions"][name] for name in motor_names]
+                        # Apply scaling for arm0
+                        if ARM0_SCALE != 1.0:
+                            center = 2048
+                            positions = [int(center + (pos - center) * ARM0_SCALE) for pos in positions]
+                        bus_arm0.write("Goal_Position", positions, motor_names)
+
+                # Play on arm1 if requested
+                if arm == 'both' or arm == '1':
+                    if "arm1_positions" in frame:
+                        positions_arm1 = [frame["arm1_positions"][name] for name in motor_names]
+                        # Apply scaling for arm1
+                        if ARM1_SCALE != 1.0:
+                            center = 2048
+                            positions_arm1 = [int(center + (pos - center) * ARM1_SCALE) for pos in positions_arm1]
+                        bus_arm1.write("Goal_Position", positions_arm1, motor_names)
+                    elif "positions" in frame and arm == '1':
+                        # Legacy format - play single arm recording on arm1
+                        positions = [frame["positions"][name] for name in motor_names]
+                        # Apply scaling for arm1
+                        if ARM1_SCALE != 1.0:
+                            center = 2048
+                            positions = [int(center + (pos - center) * ARM1_SCALE) for pos in positions]
+                        bus_arm1.write("Goal_Position", positions, motor_names)
+
             except Exception as e:
                 print(f"Error writing positions at frame {i}: {e}")
                 # Continue playback even if one frame fails
@@ -717,7 +807,7 @@ def playback_loop(name, speed=1.0):
         print("Playback complete")
 
     except Exception as e:
-        print(f"ERROR in playback_loop: {e}")
+        print(f"ERROR in playback_loop_arm: {e}")
         import traceback
         traceback.print_exc()
 
@@ -803,11 +893,12 @@ def stop():
 
 @app.route('/relax', methods=['POST'])
 def relax():
-    """Disable torque (make motors soft)"""
+    """Disable torque (make motors soft) on both arms"""
     try:
-        bus = initialize_bus()
-        bus.write("Torque_Enable", 0)
-        return jsonify({"success": True, "message": "Motors relaxed"})
+        bus_arm0, bus_arm1 = initialize_buses()
+        bus_arm0.write("Torque_Enable", 0)
+        bus_arm1.write("Torque_Enable", 0)
+        return jsonify({"success": True, "message": "Both arms relaxed"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
 
@@ -972,6 +1063,166 @@ def stop_arm_tracking():
     return jsonify({"success": True, "message": "Arm tracking stopped"})
 
 
+@app.route('/check_arms', methods=['GET'])
+def check_arms():
+    """Check connection status and read current positions of both arms"""
+    try:
+        bus_arm0, bus_arm1 = initialize_buses()
+
+        # Try to read positions from both arms
+        arm0_status = {"connected": False, "port": PORT_ARM0, "positions": {}}
+        arm1_status = {"connected": False, "port": PORT_ARM1, "positions": {}}
+
+        try:
+            if bus_arm0 and bus_arm0.is_connected:
+                positions_arm0 = bus_arm0.read("Present_Position", MOTOR_NAMES)
+                arm0_status["connected"] = True
+                arm0_status["positions"] = {name: int(pos) for name, pos in zip(MOTOR_NAMES, positions_arm0)}
+        except Exception as e:
+            arm0_status["error"] = str(e)
+
+        try:
+            if bus_arm1 and bus_arm1.is_connected:
+                positions_arm1 = bus_arm1.read("Present_Position", MOTOR_NAMES)
+                arm1_status["connected"] = True
+                arm1_status["positions"] = {name: int(pos) for name, pos in zip(MOTOR_NAMES, positions_arm1)}
+        except Exception as e:
+            arm1_status["error"] = str(e)
+
+        return jsonify({
+            "success": True,
+            "arm0": arm0_status,
+            "arm1": arm1_status
+        })
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)})
+
+
+@app.route('/record_arm', methods=['POST'])
+def record_arm():
+    """Record a specific arm (0 or 1) or both"""
+    global recording_thread, stop_flag, current_recording_name
+
+    if recording_thread and recording_thread.is_alive():
+        return jsonify({"success": False, "message": "Already recording"})
+
+    data = request.get_json() or {}
+    name = data.get('name', 'recording')
+    arm = data.get('arm', 'both')  # 'both', '0', '1'
+    current_recording_name = name
+
+    stop_flag.clear()
+    recording_thread = threading.Thread(target=record_loop_arm, args=(name, arm), daemon=True)
+    recording_thread.start()
+
+    return jsonify({"success": True, "message": f"Recording started (arm: {arm})"})
+
+
+@app.route('/play_arm', methods=['POST'])
+def play_arm():
+    """Play recording on specific arm (0 or 1) or both"""
+    global playback_thread, stop_flag
+
+    data = request.get_json() or {}
+    name = data.get('name')
+    speed = data.get('speed', 1.0)
+    arm = data.get('arm', 'both')  # 'both', '0', '1'
+
+    if not name:
+        return jsonify({"success": False, "message": "No recording name provided"})
+
+    recording_file = RECORDING_DIR / f"{name}.json"
+    if not recording_file.exists():
+        return jsonify({"success": False, "message": f"Recording '{name}' not found"})
+
+    if playback_thread and playback_thread.is_alive():
+        return jsonify({"success": False, "message": "Already playing"})
+
+    # Get duration for UI feedback
+    with open(recording_file, 'r') as f:
+        recording_data = json.load(f)
+    duration = recording_data.get('duration', 10)
+
+    stop_flag.clear()
+    playback_thread = threading.Thread(target=playback_loop_arm, args=(name, speed, arm), daemon=True)
+    playback_thread.start()
+
+    return jsonify({"success": True, "message": f"Playing recording on arm {arm}", "duration": duration})
+
+
+@app.route('/set_arm_scale', methods=['POST'])
+def set_arm_scale():
+    """Set movement scaling for individual arms"""
+    global ARM0_SCALE, ARM1_SCALE
+
+    data = request.get_json() or {}
+    arm = data.get('arm')  # '0' or '1'
+    scale = data.get('scale', 1.0)
+
+    try:
+        scale = float(scale)
+        if scale < 0.1 or scale > 2.0:
+            return jsonify({"success": False, "message": "Scale must be between 0.1 and 2.0"})
+
+        if arm == '0':
+            ARM0_SCALE = scale
+            return jsonify({"success": True, "message": f"Left arm (0) scale set to {scale}"})
+        elif arm == '1':
+            ARM1_SCALE = scale
+            return jsonify({"success": True, "message": f"Right arm (1) scale set to {scale}"})
+        else:
+            return jsonify({"success": False, "message": "Invalid arm parameter (use '0' or '1')"})
+    except ValueError:
+        return jsonify({"success": False, "message": "Invalid scale value"})
+
+
+@app.route('/get_arm_scales', methods=['GET'])
+def get_arm_scales():
+    """Get current arm scaling values"""
+    return jsonify({
+        "success": True,
+        "arm0_scale": ARM0_SCALE,
+        "arm1_scale": ARM1_SCALE
+    })
+
+
+@app.route('/swap_arms', methods=['POST'])
+def swap_arms():
+    """Swap the port assignments (ACM0 <-> ACM1)"""
+    global bus_arm0, bus_arm1, PORT_ARM0, PORT_ARM1, MOTOR_CONFIG_ARM0, MOTOR_CONFIG_ARM1
+
+    try:
+        # Disconnect existing buses
+        if bus_arm0 and bus_arm0.is_connected:
+            bus_arm0.disconnect()
+        if bus_arm1 and bus_arm1.is_connected:
+            bus_arm1.disconnect()
+
+        # Swap the port assignments
+        PORT_ARM0, PORT_ARM1 = PORT_ARM1, PORT_ARM0
+
+        # Update motor configs with new ports
+        MOTOR_CONFIG_ARM0.port = PORT_ARM0
+        MOTOR_CONFIG_ARM1.port = PORT_ARM1
+
+        # Reconnect buses with swapped ports
+        bus_arm0 = FeetechMotorsBus(MOTOR_CONFIG_ARM0)
+        bus_arm0.connect()
+
+        bus_arm1 = FeetechMotorsBus(MOTOR_CONFIG_ARM1)
+        bus_arm1.connect()
+
+        print(f"✓ Arms swapped! arm0 now on {PORT_ARM0}, arm1 now on {PORT_ARM1}")
+        return jsonify({
+            "success": True,
+            "message": f"Arms swapped! Left(arm0)={PORT_ARM0}, Right(arm1)={PORT_ARM1}"
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "message": str(e)})
+
+
 if __name__ == "__main__":
     print("Starting simple control server on port 5001...")
     print("Open simple_control_ui.html in your browser")
@@ -985,7 +1236,9 @@ if __name__ == "__main__":
     try:
         app.run(host='0.0.0.0', port=5001, debug=False)
     finally:
-        if bus:
-            bus.disconnect()
+        if bus_arm0:
+            bus_arm0.disconnect()
+        if bus_arm1:
+            bus_arm1.disconnect()
         if camera:
             camera.release()

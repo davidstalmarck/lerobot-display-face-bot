@@ -18,30 +18,44 @@ import requests
 from lerobot.common.robot_devices.motors.feetech import FeetechMotorsBus
 from lerobot.common.robot_devices.motors.configs import FeetechMotorsBusConfig
 
-# MediaPipe for hand detection
+# MediaPipe for hand detection (using new API for v0.10.30+)
 try:
     import mediapipe as mp
-    mp_hands = mp.solutions.hands
-    mp_face_detection = mp.solutions.face_detection
-    mp_pose = mp.solutions.pose
-    hands_detector = mp_hands.Hands(
-        static_image_mode=False,
-        max_num_hands=2,
-        min_detection_confidence=0.3,
+    from mediapipe.tasks import python
+    from mediapipe.tasks.python import vision
+
+    # Create detectors with new API
+    base_options_hands = python.BaseOptions(model_asset_path=None)
+    hands_options = vision.HandLandmarkerOptions(
+        base_options=base_options_hands,
+        running_mode=vision.RunningMode.VIDEO,
+        num_hands=2,
+        min_hand_detection_confidence=0.3,
+        min_hand_presence_confidence=0.3,
         min_tracking_confidence=0.3
     )
-    face_detector = mp_face_detection.FaceDetection(
-        model_selection=0,
+    hands_detector = vision.HandLandmarker.create_from_options(hands_options)
+
+    base_options_face = python.BaseOptions(model_asset_path=None)
+    face_options = vision.FaceDetectorOptions(
+        base_options=base_options_face,
+        running_mode=vision.RunningMode.VIDEO,
         min_detection_confidence=0.3
     )
-    pose_detector = mp_pose.Pose(
-        static_image_mode=False,
-        model_complexity=1,
-        min_detection_confidence=0.3,
+    face_detector = vision.FaceDetector.create_from_options(face_options)
+
+    base_options_pose = python.BaseOptions(model_asset_path=None)
+    pose_options = vision.PoseLandmarkerOptions(
+        base_options=base_options_pose,
+        running_mode=vision.RunningMode.VIDEO,
+        min_pose_detection_confidence=0.3,
+        min_pose_presence_confidence=0.3,
         min_tracking_confidence=0.3
     )
+    pose_detector = vision.PoseLandmarker.create_from_options(pose_options)
+
     mediapipe_available = True
-    print("✓ MediaPipe loaded successfully")
+    print("✓ MediaPipe loaded successfully (v0.10.30+ API)")
 except Exception as e:
     print(f"✗ MediaPipe not available: {e}")
     print("Install with: pip install mediapipe")
@@ -202,39 +216,55 @@ def detect_faces_and_hands(frame):
     detections = []
 
     if not mediapipe_available:
+        print("MediaPipe not available!")
         return detections
 
     # Convert BGR to RGB for MediaPipe
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     height, width = frame.shape[:2]
 
+    # Create MediaPipe Image object
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+    timestamp_ms = int(time.time() * 1000)
+
     # Detect faces
     try:
-        face_results = face_detector.process(frame_rgb)
+        face_results = face_detector.detect_for_video(mp_image, timestamp_ms)
         if face_results.detections:
+            print(f"✓ Found {len(face_results.detections)} face(s)")
             for detection in face_results.detections:
-                bbox = detection.location_data.relative_bounding_box
-                x = int(bbox.xmin * width)
-                y = int(bbox.ymin * height)
-                w = int(bbox.width * width)
-                h = int(bbox.height * height)
+                bbox = detection.bounding_box
+                x = bbox.origin_x
+                y = bbox.origin_y
+                w = bbox.width
+                h = bbox.height
 
                 # Draw face box
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 255), 2)
-                cv2.putText(frame, 'Face', (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 255), 3)
+                cv2.putText(frame, 'Face', (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2)
 
-                detections.append(f"face ({detection.score[0]:.0%})")
+                # Get confidence score from first category
+                score = detection.categories[0].score if detection.categories else 0.0
+                detections.append(f"face ({score:.0%})")
+        else:
+            # Only log occasionally to avoid spam
+            import random
+            if random.random() < 0.1:  # 10% of frames
+                print("No faces detected in frame")
     except Exception as e:
         print(f"Face detection error: {e}")
+        import traceback
+        traceback.print_exc()
 
     # Detect hands
     try:
-        hand_results = hands_detector.process(frame_rgb)
-        if hand_results.multi_hand_landmarks:
-            for idx, hand_landmarks in enumerate(hand_results.multi_hand_landmarks):
-                # Get bounding box of hand
-                x_coords = [lm.x for lm in hand_landmarks.landmark]
-                y_coords = [lm.y for lm in hand_landmarks.landmark]
+        hand_results = hands_detector.detect_for_video(mp_image, timestamp_ms)
+        if hand_results.hand_landmarks:
+            print(f"✓ Found {len(hand_results.hand_landmarks)} hand(s)")
+            for idx, hand_landmarks in enumerate(hand_results.hand_landmarks):
+                # Get bounding box of hand (from normalized landmarks)
+                x_coords = [lm.x for lm in hand_landmarks]
+                y_coords = [lm.y for lm in hand_landmarks]
 
                 x_min = int(min(x_coords) * width)
                 y_min = int(min(y_coords) * height)
@@ -242,16 +272,23 @@ def detect_faces_and_hands(frame):
                 y_max = int(max(y_coords) * height)
 
                 # Draw hand box
-                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
+                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 255), 3)
 
                 # Get hand label (left/right)
-                hand_label = hand_results.multi_handedness[idx].classification[0].label
-                cv2.putText(frame, f'{hand_label} Hand', (x_min, y_min - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-
-                detections.append(f"{hand_label.lower()} hand")
+                if idx < len(hand_results.handedness):
+                    hand_label = hand_results.handedness[idx][0].category_name
+                    cv2.putText(frame, f'{hand_label} Hand', (x_min, y_min - 10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                    detections.append(f"{hand_label.lower()} hand")
+        else:
+            # Only log occasionally to avoid spam
+            import random
+            if random.random() < 0.1:  # 10% of frames
+                print("No hands detected in frame")
     except Exception as e:
         print(f"Hand detection error: {e}")
+        import traceback
+        traceback.print_exc()
 
     return detections
 
@@ -265,17 +302,22 @@ def detect_and_track_arm(frame):
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     height, width = frame.shape[:2]
 
+    # Create MediaPipe Image object
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+    timestamp_ms = int(time.time() * 1000)
+
     try:
-        pose_results = pose_detector.process(frame_rgb)
+        pose_results = pose_detector.detect_for_video(mp_image, timestamp_ms)
 
         if pose_results.pose_landmarks:
-            landmarks = pose_results.pose_landmarks.landmark
+            landmarks = pose_results.pose_landmarks[0]  # Get first pose
 
             # Get right arm landmarks (use left arm if user faces camera)
             # Using LEFT side landmarks because user faces camera (their left = our right)
-            shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
-            elbow = landmarks[mp_pose.PoseLandmark.LEFT_ELBOW]
-            wrist = landmarks[mp_pose.PoseLandmark.LEFT_WRIST]
+            # Landmark indices: LEFT_SHOULDER=11, LEFT_ELBOW=13, LEFT_WRIST=15
+            shoulder = landmarks[11]
+            elbow = landmarks[13]
+            wrist = landmarks[15]
 
             # Draw arm skeleton
             def draw_point(landmark, color):
@@ -330,6 +372,8 @@ def detect_and_track_arm(frame):
             }
     except Exception as e:
         print(f"Arm tracking error: {e}")
+        import traceback
+        traceback.print_exc()
 
     return None
 
